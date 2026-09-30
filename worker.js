@@ -327,7 +327,7 @@ export async function verifyGoogleToken(token, env = {}) {
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Google-Token',
   'Access-Control-Max-Age': '86400'
 };
 function json(body, status = 200) {
