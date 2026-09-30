@@ -5,7 +5,7 @@ compatibility_date = "2026-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "vvault"
-database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"
+database_id = "873f204e-238e-4b7d-b436-fb22d5fc314e"
 
 [[r2_buckets]]
 binding = "BUCKET"
