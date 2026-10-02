@@ -201,6 +201,29 @@ export function createApi({ store, verifyToken, now = () => Date.now(), config =
       if (!key.startsWith(emailPrefix(verifiedEmail))) return fail(403, 'forbidden');
       await store.deleteBackup(key);
       return { status: 200, body: { ok: true } };
+    },
+
+    /* ---------------- premium status ----------------
+       Premium is tied to a verified Google account, same as cloud backup and
+       the account seat — there's no separate password or token to manage.
+       Granting it today is a manual step (see premiumGrant) until a payment
+       provider is wired up; the app only ever reads this flag. */
+    async premiumStatus(b, verifiedEmail) {
+      if (!verifiedEmail) return fail(401, 'invalid_token');
+      const active = await store.getPremium(verifiedEmail);
+      return { status: 200, body: { ok: true, premium: active } };
+    },
+
+    /* Admin-only: flips premium on/off for one email. Called by the developer
+       (e.g. with curl) after confirming a payment by hand — not reachable by
+       the app itself. Guarded by ADMIN_SECRET at the HTTP layer below. */
+    async premiumGrant(b, isAdmin) {
+      if (!isAdmin) return fail(403, 'forbidden');
+      const email = String(b.email || '').trim().toLowerCase();
+      if (!email || !email.includes('@')) return fail(400, 'bad_email');
+      const active = b.active !== false;
+      await store.setPremium(email, active, b.note ? String(b.note).slice(0, 200) : null);
+      return { status: 200, body: { ok: true, email, active } };
     }
   };
 }
@@ -261,6 +284,19 @@ export class D1Store {
     await this.db.prepare("UPDATE requests SET status = 'expired' WHERE email = ? AND status = 'pending'").bind(email).run();
   }
 
+  /* ---- Premium status ---- */
+  async getPremium(email) {
+    const r = await this.db.prepare('SELECT active FROM premium WHERE email = ?').bind(email).first();
+    return !!(r && r.active);
+  }
+  async setPremium(email, active, note) {
+    const t = Date.now();
+    await this.db.prepare(
+      'INSERT INTO premium (email, active, granted_at, note) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(email) DO UPDATE SET active = excluded.active, granted_at = excluded.granted_at, note = excluded.note'
+    ).bind(email, active ? 1 : 0, t, note || null).run();
+  }
+
   /* ---- R2-backed backup storage ---- */
   async putBackup(key, bytes) {
     await this.bucket.put(key, bytes);
@@ -291,6 +327,7 @@ export function ensureSchema(db) {
   if (!schemaReady.has(db)) {
     const p = db.batch([
       db.prepare('CREATE TABLE IF NOT EXISTS accounts (email TEXT PRIMARY KEY, device_id TEXT, session_hash TEXT, last_seen INTEGER)'),
+      db.prepare('CREATE TABLE IF NOT EXISTS premium (email TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 0, granted_at INTEGER, note TEXT)'),
       db.prepare('CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, email TEXT NOT NULL, device_id TEXT NOT NULL, device_name TEXT, poll_hash TEXT NOT NULL, session_hash TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)'),
       db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_email ON requests (email, status)')
     ]).catch(e => { schemaReady.delete(db); throw e; });
@@ -334,7 +371,7 @@ function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, 'Content-Type': 'application/json' } });
 }
 
-const JSON_ROUTES = ['login', 'poll', 'heartbeat', 'respond', 'logout', 'backup/list', 'backup/delete'];
+const JSON_ROUTES = ['login', 'poll', 'heartbeat', 'respond', 'logout', 'backup/list', 'backup/delete', 'premium/status', 'premium/grant'];
 const BACKUP_ROUTES = ['backup/upload', 'backup/download', 'backup/list', 'backup/delete'];
 const MAX_JSON_BYTES = 8192;
 const MAX_UPLOAD_BYTES = DEFAULTS.MAX_BACKUP_BYTES + 4096; // small margin over the raw cap for framing
@@ -375,26 +412,4 @@ export default {
       if (!body || typeof body !== 'object') return json({ ok: false, error: 'bad_json' }, 400);
 
       if (route === 'backup/download') {
-        const email = await verifyGoogleToken(String(body.googleToken || ''), env);
-        const r = await api.backupDownload(body, email);
-        if (!r.body.ok) return json(r.body, r.status);
-        return new Response(r.body.data, { status: 200, headers: { ...CORS, 'Content-Type': 'application/octet-stream' } });
-      }
-      if (route === 'backup/list') {
-        const email = await verifyGoogleToken(String(body.googleToken || ''), env);
-        const r = await api.backupList(body, email);
-        return json(r.body, r.status);
-      }
-      if (route === 'backup/delete') {
-        const email = await verifyGoogleToken(String(body.googleToken || ''), env);
-        const r = await api.backupDelete(body, email);
-        return json(r.body, r.status);
-      }
-
-      const r = await api[route](body);
-      return json(r.body, r.status);
-    } catch (e) {
-      return json({ ok: false, error: 'server_error' }, 500);
-    }
-  }
-};
+        const email = await verifyGoogleToken(String(body.googleTo
